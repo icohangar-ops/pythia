@@ -581,6 +581,37 @@
       }
     };
 
+    /* Safe DOM builder — textContent / createElement only. */
+    function el(tag, attrs, ...children) {
+      const node = document.createElement(tag);
+      if (attrs) {
+        for (const [key, value] of Object.entries(attrs)) {
+          if (value == null) continue;
+          if (key === "class") node.className = value;
+          else if (key === "text") node.textContent = String(value);
+          else if (key === "dataset") {
+            for (const [dk, dv] of Object.entries(value)) {
+              if (dv != null) node.dataset[dk] = String(dv);
+            }
+          } else if (key === "style") {
+            if (typeof value === "string") node.style.cssText = value;
+            else Object.assign(node.style, value);
+          } else {
+            node.setAttribute(key, String(value));
+          }
+        }
+      }
+      for (const child of children) {
+        if (child == null || child === false) continue;
+        if (typeof child === "string" || typeof child === "number") {
+          node.appendChild(document.createTextNode(String(child)));
+        } else {
+          node.appendChild(child);
+        }
+      }
+      return node;
+    }
+
     async function fetchJSON(url) {
       const r = await fetch(url, { headers: { "Accept": "application/json" } });
       if (!r.ok) throw new Error(`${url}: ${r.status}`);
@@ -613,15 +644,20 @@
       const brier = s.per_analyst_brier || {};
       const entries = Object.entries(brier).sort((a, b) => a[1] - b[1]);
       if (entries.length === 0) {
-        brierList.innerHTML = `<div style="color: var(--ink-mute); font-family: var(--mono); font-size: 0.74rem;">no settled markets yet</div>`;
+        brierList.replaceChildren(el("div", {
+          style: "color: var(--ink-mute); font-family: var(--mono); font-size: 0.74rem;",
+          text: "no settled markets yet"
+        }));
       } else {
-        brierList.innerHTML = entries.map(([id, score]) => {
+        brierList.replaceChildren(...entries.map(([id, score]) => {
           const color = score <= 0.20 ? "var(--good)" : score <= 0.33 ? "var(--warn)" : "var(--bad)";
-          return `<div style="display: flex; justify-content: space-between; padding: 0.3rem 0; font-family: var(--mono); font-size: 0.78rem; border-bottom: 1px solid var(--line);">
-            <span style="color: var(--gold);">${id}</span>
-            <span style="color: ${color};">${Number(score).toFixed(4)}</span>
-          </div>`;
-        }).join("");
+          return el("div", {
+            style: "display: flex; justify-content: space-between; padding: 0.3rem 0; font-family: var(--mono); font-size: 0.78rem; border-bottom: 1px solid var(--line);"
+          },
+            el("span", { style: "color: var(--gold);", text: String(id) }),
+            el("span", { style: `color: ${color};`, text: Number(score).toFixed(4) })
+          );
+        }));
       }
 
       // Skipped reasons
@@ -629,14 +665,19 @@
       const reasons = s.skipped_reasons || {};
       const reasonEntries = Object.entries(reasons).sort((a, b) => b[1] - a[1]);
       if (reasonEntries.length === 0) {
-        skipList.innerHTML = `<div style="color: var(--ink-mute); font-family: var(--mono); font-size: 0.74rem;">none</div>`;
+        skipList.replaceChildren(el("div", {
+          style: "color: var(--ink-mute); font-family: var(--mono); font-size: 0.74rem;",
+          text: "none"
+        }));
       } else {
-        skipList.innerHTML = reasonEntries.map(([r, n]) =>
-          `<div style="display: flex; justify-content: space-between; padding: 0.25rem 0; font-family: var(--mono); font-size: 0.74rem;">
-            <span style="color: var(--ink-dim);">${r}</span>
-            <span style="color: var(--warn);">${n}</span>
-          </div>`
-        ).join("");
+        skipList.replaceChildren(...reasonEntries.map(([r, n]) =>
+          el("div", {
+            style: "display: flex; justify-content: space-between; padding: 0.25rem 0; font-family: var(--mono); font-size: 0.74rem;"
+          },
+            el("span", { style: "color: var(--ink-dim);", text: String(r) }),
+            el("span", { style: "color: var(--warn);", text: String(n) })
+          )
+        ));
       }
 
       document.getElementById("last-refresh").textContent =
@@ -763,10 +804,16 @@
       const body = document.getElementById("trades-body");
       const trades = data.trades || [];
       if (trades.length === 0) {
-        body.innerHTML = `<tr><td colspan="7" style="text-align:center; color: var(--ink-mute); padding: 2rem;">no audit entries yet</td></tr>`;
+        body.replaceChildren(el("tr", {},
+          el("td", {
+            colspan: "7",
+            style: "text-align:center; color: var(--ink-mute); padding: 2rem;",
+            text: "no audit entries yet"
+          })
+        ));
         return;
       }
-      body.innerHTML = trades.map(t => {
+      body.replaceChildren(...trades.map(t => {
         const pnl = t.realized_pnl_usd;
         let pnlCls = "zero", pnlTxt = "—";
         if (pnl !== null && pnl !== undefined) {
@@ -775,32 +822,32 @@
         }
         let statusBadge;
         if (t.is_skipped) {
-          statusBadge = `<span class="badge skip">SKIP</span>`;
+          statusBadge = el("span", { class: "badge skip", text: "SKIP" });
         } else if (t.is_paper) {
-          statusBadge = `<span class="badge paper">PAPER</span>`;
+          statusBadge = el("span", { class: "badge paper", text: "PAPER" });
         } else if (t.won === true) {
-          statusBadge = `<span class="badge won">WON</span>`;
+          statusBadge = el("span", { class: "badge won", text: "WON" });
         } else if (t.won === false) {
-          statusBadge = `<span class="badge lost">LOST</span>`;
+          statusBadge = el("span", { class: "badge lost", text: "LOST" });
         } else {
-          statusBadge = `<span class="badge exec">OPEN</span>`;
+          statusBadge = el("span", { class: "badge exec", text: "OPEN" });
         }
         const sig = t.signature || "";
         const sigMark = sig.startsWith("stub:")
-          ? `<span style="color: var(--ink-mute);" title="${sig}">∘ stub</span>`
-          : `<span style="color: var(--good);" title="${sig}">✓ sig</span>`;
+          ? el("span", { style: "color: var(--ink-mute);", title: sig, text: "∘ stub" })
+          : el("span", { style: "color: var(--good);", title: sig, text: "✓ sig" });
         const side = t.plan?.side || "—";
         const stake = t.plan?.size_usd != null ? "$" + fmt.usd(t.plan.size_usd) : "—";
-        return `<tr data-mkt="${t.market_id}">
-          <td class="ts">${fmt.ts(t.timestamp)}</td>
-          <td class="mkt">${fmt.short(t.market_id, 22)}</td>
-          <td>${side}</td>
-          <td>${stake}</td>
-          <td class="pnl ${pnlCls}">${pnlTxt}</td>
-          <td>${statusBadge}</td>
-          <td>${sigMark}</td>
-        </tr>`;
-      }).join("");
+        return el("tr", { dataset: { mkt: t.market_id } },
+          el("td", { class: "ts", text: fmt.ts(t.timestamp) }),
+          el("td", { class: "mkt", text: fmt.short(t.market_id, 22) }),
+          el("td", { text: side }),
+          el("td", { text: stake }),
+          el("td", { class: `pnl ${pnlCls}`, text: pnlTxt }),
+          el("td", {}, statusBadge),
+          el("td", {}, sigMark)
+        );
+      }));
 
       // Row click → drawer
       body.querySelectorAll("tr[data-mkt]").forEach(tr => {
@@ -813,27 +860,28 @@
       const list = await fetchJSON("/api/achievements");
       const grid = document.getElementById("ach-grid");
       if (!list || list.length === 0) {
-        grid.innerHTML = `<div style="color: var(--ink-mute); font-family: var(--mono); font-size: 0.78rem;">
-          no achievements config loaded — pass --achievements-config to the server
-        </div>`;
+        grid.replaceChildren(el("div", {
+          style: "color: var(--ink-mute); font-family: var(--mono); font-size: 0.78rem;",
+          text: "no achievements config loaded — pass --achievements-config to the server"
+        }));
         return;
       }
       const icons = ["◈", "✦", "⬡", "❖", "✧", "⬢", "◐", "✸", "◇", "✺"];
-      grid.innerHTML = list.map((a, i) => {
+      grid.replaceChildren(...list.map((a, i) => {
         const unlocked = a.unlocked_at !== null && a.unlocked_at !== undefined;
         const cls = unlocked ? "unlocked" : "locked";
         const state = unlocked ? "UNLOCKED" : "LOCKED";
         const valTxt = unlocked && a.unlocked_value !== null && a.unlocked_value !== undefined
           ? `reached: ${a.unlocked_value}`
           : (unlocked ? "unlocked" : "in progress");
-        return `<div class="ach ${cls}">
-          <span class="lock-state">${state}</span>
-          <span class="icon">${icons[i % icons.length]}</span>
-          <div class="name">${a.name}</div>
-          <div class="desc">${a.description}</div>
-          <div class="value">${valTxt}</div>
-        </div>`;
-      }).join("");
+        return el("div", { class: `ach ${cls}` },
+          el("span", { class: "lock-state", text: state }),
+          el("span", { class: "icon", text: icons[i % icons.length] }),
+          el("div", { class: "name", text: a.name }),
+          el("div", { class: "desc", text: a.description }),
+          el("div", { class: "value", text: valTxt })
+        );
+      }));
     }
 
     // ----- Drawer (trade detail) ------------------------------------ //
@@ -843,7 +891,11 @@
       const title = document.getElementById("drawer-title");
       const body = document.getElementById("drawer-body");
       title.textContent = `market · ${marketId}`;
-      body.innerHTML = `<div class="section" style="color: var(--ink-mute); font-family: var(--mono); font-size: 0.78rem;">loading…</div>`;
+      body.replaceChildren(el("div", {
+        class: "section",
+        style: "color: var(--ink-mute); font-family: var(--mono); font-size: 0.78rem;",
+        text: "loading…"
+      }));
       drawer.classList.add("open");
       scrim.classList.add("show");
 
@@ -851,63 +903,70 @@
         const data = await fetchJSON(`/api/trades/${encodeURIComponent(marketId)}`);
         const entries = data.entries || [];
         if (entries.length === 0) {
-          body.innerHTML = `<div class="section" style="color: var(--ink-mute);">no entries</div>`;
+          body.replaceChildren(el("div", {
+            class: "section",
+            style: "color: var(--ink-mute);",
+            text: "no entries"
+          }));
           return;
         }
         const e = entries[0];
-        const estimatesHtml = (e.estimates || []).map(est => `
-          <div class="estimate">
-            <div>
-              <span class="analyst">${est.analyst_id || "?"}</span>
-              <span style="color: var(--ink-mute);"> · </span>
-              <span class="prob">p=${est.probability ?? "?"}</span>
-              <span style="color: var(--ink-mute);"> · </span>
-              <span class="conf">conf=${est.confidence ?? "?"}</span>
-            </div>
-            <div class="why">${est.rationale || ""}</div>
-            ${est.evidence && est.evidence.length ? `<div style="color: var(--ink-mute); font-size: 0.68rem; margin-top: 0.2rem;">evidence: ${est.evidence.join(" · ")}</div>` : ""}
-          </div>
-        `).join("");
+        const estimates = e.estimates || [];
+        const estimatesBlock = estimates.length === 0
+          ? el("pre", { text: "(none)" })
+          : el("div", {}, ...estimates.map(est => {
+              const ev = est.evidence && est.evidence.length
+                ? el("div", {
+                    style: "color: var(--ink-mute); font-size: 0.68rem; margin-top: 0.2rem;",
+                    text: "evidence: " + est.evidence.join(" · ")
+                  })
+                : null;
+              return el("div", { class: "estimate" },
+                el("div", {},
+                  el("span", { class: "analyst", text: est.analyst_id || "?" }),
+                  el("span", { style: "color: var(--ink-mute);", text: " · " }),
+                  el("span", { class: "prob", text: "p=" + (est.probability ?? "?") }),
+                  el("span", { style: "color: var(--ink-mute);", text: " · " }),
+                  el("span", { class: "conf", text: "conf=" + (est.confidence ?? "?") })
+                ),
+                el("div", { class: "why", text: est.rationale || "" }),
+                ev
+              );
+            }));
 
         const decision = e.decision || {};
         const plan = e.plan || {};
         const receipt = e.receipt || null;
         const settlement = receipt?.settlement || null;
 
-        body.innerHTML = `
-          <div class="section">
-            <h4>Timestamp</h4>
-            <pre>${fmt.ts(e.timestamp)}</pre>
-          </div>
-          <div class="section">
-            <h4>Analyst Estimates (${(e.estimates || []).length})</h4>
-            ${estimatesHtml || `<pre>(none)</pre>`}
-          </div>
-          <div class="section">
-            <h4>Consensus Decision</h4>
-            <pre>${JSON.stringify(decision, null, 2)}</pre>
-          </div>
-          <div class="section">
-            <h4>Risk Plan</h4>
-            <pre>${JSON.stringify(plan, null, 2)}</pre>
-          </div>
-          ${receipt ? `
-          <div class="section">
-            <h4>Trade Receipt</h4>
-            <pre>${JSON.stringify(receipt, null, 2)}</pre>
-          </div>` : `<div class="section"><h4>Trade Receipt</h4><pre>(skipped — ${e.skipped_reason || "no receipt"})</pre></div>`}
-          ${settlement ? `
-          <div class="section">
-            <h4>Settlement</h4>
-            <pre>${JSON.stringify(settlement, null, 2)}</pre>
-          </div>` : ""}
-          <div class="section">
-            <h4>Signature</h4>
-            <pre>${e.signature || "(none)"}</pre>
-          </div>
-        `;
+        const section = (heading, ...kids) =>
+          el("div", { class: "section" }, el("h4", { text: heading }), ...kids);
+
+        const nodes = [
+          section("Timestamp", el("pre", { text: fmt.ts(e.timestamp) })),
+          section(`Analyst Estimates (${estimates.length})`, estimatesBlock),
+          section("Consensus Decision", el("pre", { text: JSON.stringify(decision, null, 2) })),
+          section("Risk Plan", el("pre", { text: JSON.stringify(plan, null, 2) })),
+        ];
+        if (receipt) {
+          nodes.push(section("Trade Receipt", el("pre", { text: JSON.stringify(receipt, null, 2) })));
+        } else {
+          nodes.push(section(
+            "Trade Receipt",
+            el("pre", { text: `(skipped — ${e.skipped_reason || "no receipt"})` })
+          ));
+        }
+        if (settlement) {
+          nodes.push(section("Settlement", el("pre", { text: JSON.stringify(settlement, null, 2) })));
+        }
+        nodes.push(section("Signature", el("pre", { text: e.signature || "(none)" })));
+        body.replaceChildren(...nodes);
       } catch (err) {
-        body.innerHTML = `<div class="section" style="color: var(--bad);">failed: ${err.message}</div>`;
+        body.replaceChildren(el("div", {
+          class: "section",
+          style: "color: var(--bad);",
+          text: "failed: " + err.message
+        }));
       }
     }
 
