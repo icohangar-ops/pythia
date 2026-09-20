@@ -45,6 +45,15 @@ class Estimate(BaseModel):
     timestamp: str = Field(
         default_factory=lambda: datetime.now(UTC).isoformat()
     )
+    degraded: bool = Field(
+        default=False,
+        description=(
+            "True when this estimate came from a parse fallback rather than a"
+            " parsed LLM response (probability-number scan or uninformative"
+            " prior). The consensus governor excludes degraded estimates from"
+            " fusion so fabricated priors can never drive a trade."
+        ),
+    )
 
     @field_validator("rationale")
     @classmethod

@@ -200,12 +200,17 @@ agreement_score = clamp(1 - σ_w / 0.5, 0, 1)
 ## Gate logic
 
 ```
-if len(estimates) < min_analysts:                     gate = "wait"
+if len(healthy_estimates) < min_analysts:             gate = "wait"
 elif agreement_score < agreement_threshold:           gate = "skip"
 else:                                                 gate = "trade"
 ```
 
-- **wait** — not enough analysts yet; the mesh should poll again.
+`healthy_estimates` counts only non-degraded ballots: the row-5 governor
+excludes degraded parse-fallback estimates before the gate runs, so they do
+**not** count toward the `min_analysts` quorum. A round with one healthy and
+one degraded ballot at `min_analysts=2` therefore gates `wait`, not `trade`.
+
+- **wait** — not enough healthy analysts yet; the mesh should poll again.
 - **skip** — too much disagreement; no edge, don't trade.
 - **trade** — consensus reached; pass to `pythia-risk` for sizing.
 

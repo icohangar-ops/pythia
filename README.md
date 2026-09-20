@@ -192,6 +192,21 @@ Pythia is shipped as an opinionated reference mesh plus thin integration wrapper
 
 ---
 
+## Propagation notes (wave B — DeFi/OnChain rows)
+
+Adoption state for the portfolio propagation matrix rows that name this
+repository. Adopted patterns name their implementing module; reversals name
+the inspected module and the condition that would reopen the row.
+
+| Row | Pattern | Outcome | Where / why |
+|---|---|---|---|
+| 1 | Swarm consensus split damping | Adopted | `packages/consensus/src/pythia_consensus/fusion.py` — canonical chp-core-rs v0.1.0 `evaluate_swarm_gate` port: gap-based split detection over sorted analyst probabilities (`split_damped_weights`, `weighted_median_value`), side-size weight damping, and refusion on the damped weights. The trigger is `ConsensusConfig.split_threshold_pct` (default 20% of the weighted median with at least two votes on each side); `ConsensusDecision.split_damped` records when damping fired. |
+| 5 | Deterministic governor | Adopted | `packages/consensus/src/pythia_consensus/fusion.py` excludes parse-fallback estimates — marked `degraded=True` by `packages/analyst-mesh/src/pythia_analyst_mesh/base.py` — from fusion (`ConsensusDecision.governor_excluded`) and refuses to trade (`skip`, P=0.5) when every ballot is degraded. Two unparseable LLM outputs can no longer fuse into perfect agreement. |
+| 3 | Tiered resolution | Reversed | `packages/strata/src/pythia_strata/providers/news.py`, `onchain.py`, and `social.py` are declared stubs whose `fetch` performs no external reads, so there is nothing to tier. Reopen when a provider makes real network reads. |
+| 11 | On-chain identity + blob state | Reversed | `packages/consensus/src/pythia_consensus/audit.py` signs with a `stub:sha256:<hex>` fallback and the repo holds no Walrus or other blob state. Reopen once real signing and durable blob state exist. |
+
+---
+
 ## License
 
 MIT for the new code (`packages/delphi-adapter`, `packages/analyst-mesh`). Wrapper packages inherit the license of their upstream `icohangar-ops` repo.

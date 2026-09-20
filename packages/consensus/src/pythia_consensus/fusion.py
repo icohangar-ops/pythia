@@ -42,6 +42,7 @@ Rationale: identical analysts ⇒ σ_w = 0 ⇒ score 1.0; maximally-split analys
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Sequence
 
@@ -49,6 +50,8 @@ import numpy as np
 from scipy.special import expit  # numerically stable sigmoid
 
 from .types import ConsensusConfig, ConsensusDecision, ConsensusMethod, Estimate
+
+logger = logging.getLogger(__name__)
 
 # Probabilities are clamped into this range before being mapped to logit space,
 # so log(0) / div-by-zero never occurs. 0.01 ↔ logit ≈ -4.595, 0.99 ↔ +4.595.
@@ -208,6 +211,85 @@ def _decide_gate(
         return "skip"
     return "trade"
 
+
+# ---------------------------------------------------------------------------
+# Row 1 — split damping: canonical chp-core-rs v0.1.0 evaluate_swarm_gate
+# port. Split detection is gap-based: the largest adjacent gap between sorted
+# votes must exceed split_threshold_pct of the weighted median with at least
+# two votes on each side. Damping multiplies each side's weight toward its
+# side size (the larger side keeps more weight) and the fused value is
+# recomputed on the damped weights.
+# ---------------------------------------------------------------------------
+
+_SPLIT_DAMPING_MIN_SIDE = 2
+
+def weighted_median_value(probs: np.ndarray, weights: np.ndarray) -> float:
+    """Weighted median under the canonical gate convention.
+
+    The smallest sorted value whose cumulative weight reaches half the total
+    weight. Matches chp-core-rs ``evaluate_swarm_gate``'s median scan.
+    """
+    order = np.argsort(probs, kind="stable")
+    sorted_probs = probs[order]
+    sorted_weights = weights[order]
+    total = float(sorted_weights.sum())
+    if total <= 0.0:
+        return float(sorted_probs[-1])
+    cumulative = 0.0
+    median = float(sorted_probs[-1])
+    for value, weight in zip(sorted_probs, sorted_weights, strict=True):
+        cumulative += float(weight)
+        if cumulative >= total / 2.0:
+            median = float(value)
+            break
+    return median
+
+def split_damped_weights(
+    probs: np.ndarray,
+    weights: np.ndarray,
+    split_threshold_pct: float,
+) -> tuple[np.ndarray, bool]:
+    """Row-1 damping: canonical chp-core-rs ``evaluate_swarm_gate`` port.
+
+    Sorts votes by value, finds the largest adjacent gap, and when it
+    exceeds ``split_threshold_pct`` of the weighted median with at least two
+    votes on each side, multiplies each side's weights by
+    ``side_size / n * 2`` (larger side keeps more weight). Returns the
+    damped weight vector and whether a split was detected.
+    """
+    n = len(probs)
+    if n < 2 * _SPLIT_DAMPING_MIN_SIDE:
+        return weights, False
+
+    order = np.argsort(probs, kind="stable")
+    sorted_probs = probs[order]
+    median = weighted_median_value(probs, weights)
+
+    max_gap = 0.0
+    gap_at = 0
+    for i in range(1, n):
+        gap = float(sorted_probs[i] - sorted_probs[i - 1])
+        if gap > max_gap:
+            max_gap = gap
+            gap_at = i
+
+    threshold = abs(median) * split_threshold_pct / 100.0
+    lower = gap_at
+    upper = n - gap_at
+    side_ok = lower >= _SPLIT_DAMPING_MIN_SIDE and upper >= _SPLIT_DAMPING_MIN_SIDE
+    if not (max_gap > threshold and side_ok):
+        return weights, False
+
+    damped_sorted = np.array(weights, dtype=np.float64)[order]
+    for i in range(n):
+        side_size = lower if i < lower else upper
+        damped_sorted[i] *= side_size / n * 2.0
+
+    damped = np.empty(n, dtype=np.float64)
+    for pos, idx in enumerate(order):
+        damped[idx] = damped_sorted[pos]
+    return damped, True
+
 def fuse(estimates: Sequence[Estimate], config: ConsensusConfig) -> ConsensusDecision:
     """Fuse N analyst estimates into a single `ConsensusDecision`.
 
@@ -223,7 +305,11 @@ def fuse(estimates: Sequence[Estimate], config: ConsensusConfig) -> ConsensusDec
     -------
     ConsensusDecision
         With `consensus_prob`, `agreement_score`, `gate`, `contributor_ids`,
-        `method`, `weights_used`, and `timestamp` populated.
+        `method`, `weights_used`, `timestamp`, `split_damped`, and
+        `governor_excluded` populated. `weights_used` is the exact weight
+        vector passed to the fusion function — the damped vector when
+        `split_damped=True` — so recomputing the fusion from the audit
+        record's own fields reproduces `consensus_prob`.
     """
     if not estimates:
         raise ValueError("fuse() requires at least one Estimate; got 0.")
@@ -231,21 +317,71 @@ def fuse(estimates: Sequence[Estimate], config: ConsensusConfig) -> ConsensusDec
     market_id = estimates[0].market_id
     contributor_ids = [e.analyst_id for e in estimates]
 
-    weights = _normalise_weights(estimates, config.weights)
+    # Row 5 — deterministic governor on the degraded-LLM path: parse-fallback
+    # estimates are fabricated priors (e.g. P(YES)=0.5 at confidence 0.0) and
+    # are excluded from fusion. With no healthy ballots left the gate refuses
+    # (`skip`) rather than trading on fabricated agreement.
+    degraded_ids = [e.analyst_id for e in estimates if e.degraded]
+    healthy = [e for e in estimates if not e.degraded]
+
+    weights = _normalise_weights(healthy, config.weights)
     weights_used = {
-        est.analyst_id: float(w) for est, w in zip(estimates, weights, strict=True)
+        est.analyst_id: float(w) for est, w in zip(healthy, weights, strict=True)
     }
 
-    probs = np.asarray([e.probability for e in estimates], dtype=np.float64)
+    if not healthy:
+        logger.warning(
+            "market=%s governor: all %d estimates degraded (parse fallback);"
+            " refusing to trade on fabricated priors",
+            market_id,
+            len(estimates),
+        )
+        return ConsensusDecision(
+            market_id=market_id,
+            consensus_prob=0.5,
+            agreement_score=0.0,
+            gate="skip",
+            contributor_ids=contributor_ids,
+            method=config.method,
+            weights_used=weights_used,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            split_damped=False,
+            governor_excluded=degraded_ids,
+        )
+
+    probs = np.asarray([e.probability for e in healthy], dtype=np.float64)
 
     fuse_fn = _FUSION_DISPATCH[config.method]
-    consensus_prob = float(fuse_fn(probs, weights))
+
+    # Row 1 — split damping: when the swarm's votes split across a gap larger
+    # than split_threshold_pct of the weighted median (with at least two votes
+    # on each side), damp each side's weights toward its size and recompute
+    # the fused value on the damped weights.
+    damped_weights, split_damped = split_damped_weights(
+        probs, weights, config.split_threshold_pct,
+    )
+    if split_damped:
+        logger.info(
+            "market=%s row-1 split damping fired (%s)",
+            market_id, [e.analyst_id for e in healthy],
+        )
+        consensus_prob = float(fuse_fn(probs, damped_weights))
+        # Replay invariant: the audit record must carry the exact weight
+        # vector that produced consensus_prob. weights_used was built from
+        # the undamped weights above — rebuild it from the damped vector so
+        # fuse_fn(probs, weights_used) reproduces consensus_prob from the
+        # audit log alone.
+        weights_used = {
+            est.analyst_id: float(w) for est, w in zip(healthy, damped_weights, strict=True)
+        }
+    else:
+        consensus_prob = float(fuse_fn(probs, weights))
 
     # Clamp into [0, 1] just in case of floating point excursions.
     consensus_prob = float(max(0.0, min(1.0, consensus_prob)))
 
-    score = agreement_score(estimates, config.weights)
-    gate = _decide_gate(len(estimates), score, config)
+    score = agreement_score(healthy, config.weights)
+    gate = _decide_gate(len(healthy), score, config)
 
     return ConsensusDecision(
         market_id=market_id,
@@ -256,6 +392,8 @@ def fuse(estimates: Sequence[Estimate], config: ConsensusConfig) -> ConsensusDec
         method=config.method,
         weights_used=weights_used,
         timestamp=datetime.now(timezone.utc).isoformat(),
+        split_damped=split_damped,
+        governor_excluded=degraded_ids,
     )
 
 __all__ = [
@@ -264,4 +402,6 @@ __all__ = [
     "fuse_logit_mean",
     "fuse_median",
     "fuse_trimmed_mean",
+    "split_damped_weights",
+    "weighted_median_value",
 ]
