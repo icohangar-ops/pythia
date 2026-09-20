@@ -168,9 +168,11 @@ def test_parse_partial_json_missing_rationale(analyst, market):
 def test_parse_partial_json_missing_probability(analyst, market):
     raw = json.dumps({"confidence": 0.4, "rationale": "No prob."})
     est = analyst._parse_llm_response(raw, market)
-    # Missing probability → default 0.5
+    # Missing probability → default 0.5, but that default is a fabricated
+    # prior, not a judgment — row-5 governor must exclude it from fusion.
     assert est.probability == pytest.approx(0.5)
     assert est.confidence == pytest.approx(0.4)
+    assert est.degraded is True
 
 def test_parse_partial_json_missing_evidence(analyst, market):
     raw = json.dumps({
@@ -296,3 +298,31 @@ def test_parse_garbage_marked_degraded(analyst, market):
     est = analyst._parse_llm_response("total garbage !!!", market)
     assert est.probability == pytest.approx(0.5)  # prior
     assert est.degraded is True
+
+def test_parse_json_empty_object_marked_degraded(analyst, market):
+    # `{}` parses as valid JSON but carries no probability: two such ballots
+    # would fuse into perfect fake agreement and could gate "trade". The
+    # substituted 0.5 prior must be degraded so the governor excludes it.
+    est = analyst._parse_llm_response("{}", market)
+    assert est.probability == pytest.approx(0.5)
+    assert est.degraded is True
+
+def test_parse_json_null_probability_marked_degraded(analyst, market):
+    raw = json.dumps({"probability": None, "confidence": 0.5})
+    est = analyst._parse_llm_response(raw, market)
+    assert est.probability == pytest.approx(0.5)
+    assert est.degraded is True
+
+def test_parse_json_non_numeric_probability_marked_degraded(analyst, market):
+    raw = json.dumps({"probability": "not a number"})
+    est = analyst._parse_llm_response(raw, market)
+    assert est.probability == pytest.approx(0.5)
+    assert est.degraded is True
+
+def test_parse_json_explicit_half_probability_stays_healthy(analyst, market):
+    # An explicit P(YES)=0.5 is a genuine judgment (not the substituted
+    # default) — it must remain a healthy ballot.
+    raw = json.dumps({"probability": 0.5, "confidence": 0.7, "rationale": "Coin flip."})
+    est = analyst._parse_llm_response(raw, market)
+    assert est.probability == pytest.approx(0.5)
+    assert est.degraded is False

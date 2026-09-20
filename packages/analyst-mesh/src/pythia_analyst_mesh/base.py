@@ -437,15 +437,20 @@ class BaseAnalyst(ABC):
     ) -> Estimate:
         """Coerce a parsed dict into an ``Estimate``, clamping bad values."""
         # Probability — try several common keys, clamp to [0,1].
-        prob = self._extract_float(
+        prob, prob_extracted = self._extract_float(
             d,
             keys=("probability", "prob", "p_yes", "p", "P(YES)", "p_yes_est"),
             default=0.5,
             lo=0.0,
             hi=1.0,
         )
+        # Row-5 governor: a parsed-JSON response with no probability field is
+        # a fabricated prior, not a judgment — the 0.5 default would let two
+        # such ballots fuse into perfect fake agreement and gate "trade".
+        # Mark it degraded so the consensus governor excludes it from fusion.
+        degraded = not prob_extracted
         # Confidence — try several common keys, clamp to [0,1].
-        conf = self._extract_float(
+        conf, _ = self._extract_float(
             d,
             keys=("confidence", "conf", "calibration", "self_confidence"),
             default=0.3,
@@ -473,20 +478,26 @@ class BaseAnalyst(ABC):
             evidence=evidence,
             analyst_id=analyst_id,
             timestamp=timestamp,
+            degraded=degraded,
         )
 
     @staticmethod
     def _extract_float(
         d: dict[str, Any], keys: tuple[str, ...], default: float, lo: float, hi: float
-    ) -> float:
+    ) -> tuple[float, bool]:
+        """Extract the first parsable value under ``keys``, clamped to [lo, hi].
+
+        Returns ``(value, extracted)`` — ``extracted`` is False when no key
+        held a usable number and the default was substituted.
+        """
         for k in keys:
             if k in d and d[k] is not None:
                 try:
                     v = float(d[k])  # type: ignore[arg-type]
                 except (TypeError, ValueError):
                     continue
-                return max(lo, min(hi, v))
-        return default
+                return max(lo, min(hi, v)), True
+        return default, False
 
     @staticmethod
     def _extract_evidence(raw: Any) -> list[str]:
