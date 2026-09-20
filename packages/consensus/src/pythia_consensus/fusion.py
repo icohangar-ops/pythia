@@ -306,7 +306,10 @@ def fuse(estimates: Sequence[Estimate], config: ConsensusConfig) -> ConsensusDec
     ConsensusDecision
         With `consensus_prob`, `agreement_score`, `gate`, `contributor_ids`,
         `method`, `weights_used`, `timestamp`, `split_damped`, and
-        `governor_excluded` populated.
+        `governor_excluded` populated. `weights_used` is the exact weight
+        vector passed to the fusion function — the damped vector when
+        `split_damped=True` — so recomputing the fusion from the audit
+        record's own fields reproduces `consensus_prob`.
     """
     if not estimates:
         raise ValueError("fuse() requires at least one Estimate; got 0.")
@@ -363,6 +366,14 @@ def fuse(estimates: Sequence[Estimate], config: ConsensusConfig) -> ConsensusDec
             market_id, [e.analyst_id for e in healthy],
         )
         consensus_prob = float(fuse_fn(probs, damped_weights))
+        # Replay invariant: the audit record must carry the exact weight
+        # vector that produced consensus_prob. weights_used was built from
+        # the undamped weights above — rebuild it from the damped vector so
+        # fuse_fn(probs, weights_used) reproduces consensus_prob from the
+        # audit log alone.
+        weights_used = {
+            est.analyst_id: float(w) for est, w in zip(healthy, damped_weights, strict=True)
+        }
     else:
         consensus_prob = float(fuse_fn(probs, weights))
 

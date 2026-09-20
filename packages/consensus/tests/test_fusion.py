@@ -323,6 +323,31 @@ class TestSplitDamping:
         d2 = fuse(ests_tight, ConsensusConfig(method="logit-mean"))
         assert d2.split_damped is False
 
+    def test_damped_round_replays_from_audit_record(self) -> None:
+        """Full-replay invariant: consensus_prob must be recomputable from the
+        audit record alone. When split damping fires, weights_used must carry
+        the exact damped weight vector the fusion used — not the undamped
+        normalization."""
+        ests = _est([0.30, 0.34, 0.38, 0.82, 0.86])
+        decision = fuse(ests, ConsensusConfig(method="logit-mean", split_threshold_pct=20.0))
+        assert decision.split_damped is True
+
+        # Damping is non-trivial here (3-vs-2 split: multipliers 1.2 and 0.8),
+        # so the recorded weights must differ from the undamped normalization
+        # (which would be 0.2 for every analyst).
+        assert decision.weights_used["a0"] == pytest.approx(0.24, abs=1e-9)
+        assert decision.weights_used["a4"] == pytest.approx(0.16, abs=1e-9)
+
+        # Replay from the audit record's own fields: the round's estimates and
+        # the recorded weights, aligned in contributor order.
+        probs = np.asarray([e.probability for e in ests], dtype=np.float64)
+        replay_weights = np.asarray(
+            [decision.weights_used[aid] for aid in decision.contributor_ids],
+            dtype=np.float64,
+        )
+        replayed = fuse_logit_mean(probs, replay_weights)
+        assert replayed == pytest.approx(decision.consensus_prob, abs=1e-12)
+
 
 class TestDegradedGovernor:
     """Row-5 deterministic governor: degraded estimates never vote."""
