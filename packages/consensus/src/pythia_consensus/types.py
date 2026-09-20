@@ -38,6 +38,14 @@ except ImportError:  # pragma: no cover - exercised only when mesh isn't install
         evidence: list[str] = _Field(default_factory=list, description="Citations / URLs.")
         analyst_id: str = _Field(..., description="Which analyst produced this estimate.")
         timestamp: str = _Field(..., description="ISO-8601 timestamp.")
+        degraded: bool = _Field(
+            default=False,
+            description=(
+                "True when this estimate came from a parse fallback rather than a"
+                " parsed LLM response. The consensus governor excludes degraded"
+                " estimates from fusion."
+            ),
+        )
 
     ESTIMATE_SOURCE = "local-fallback"
 
@@ -76,6 +84,17 @@ class ConsensusConfig(BaseModel):
     method: ConsensusMethod = "logit-mean"
     agreement_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
     min_analysts: int = Field(default=2, ge=1)
+    split_threshold_pct: float = Field(
+        default=20.0,
+        gt=0.0,
+        description=(
+            "Row-1 split-damping trigger: the largest adjacent gap between"
+            " sorted analyst probabilities, as a percentage of the weighted"
+            " median, above which (with at least two votes on each side of"
+            " the gap) weights are damped toward side size before refusion."
+            " Canonical chp-core-rs v0.1.0 evaluate_swarm_gate port."
+        ),
+    )
     weights: Optional[dict[str, float]] = None
 
 class ConsensusDecision(BaseModel):
@@ -95,6 +114,23 @@ class ConsensusDecision(BaseModel):
     method: ConsensusMethod
     weights_used: dict[str, float]
     timestamp: str  # ISO-8601
+    split_damped: bool = Field(
+        default=False,
+        description=(
+            "True when the row-1 split damping fired: the swarm's votes split"
+            " across a gap larger than split_threshold_pct of the weighted"
+            " median with at least two votes on each side, so weights were"
+            " damped toward side size before refusion (canonical"
+            " chp-core-rs v0.1.0 evaluate_swarm_gate port)."
+        ),
+    )
+    governor_excluded: list[str] = Field(
+        default_factory=list,
+        description=(
+            "analyst_ids whose degraded (parse-fallback) estimates the"
+            " deterministic governor excluded from fusion."
+        ),
+    )
 
 __all__ = [
     "ConsensusConfig",

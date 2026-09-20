@@ -17,6 +17,8 @@ from pythia_consensus.fusion import (
     fuse_logit_mean,
     fuse_median,
     fuse_trimmed_mean,
+    split_damped_weights,
+    weighted_median_value,
 )
 from pythia_consensus.types import Estimate
 
@@ -248,3 +250,109 @@ class TestMisc:
         assert d.method == "logit-mean"
         assert d.gate in {"trade", "skip", "wait"}
         assert d.timestamp  # non-empty
+
+class TestSplitDamping:
+    """Row-1 split damping — canonical chp-core-rs v0.1.0 gate port."""
+
+    def test_weighted_median_convention(self) -> None:
+        probs = np.asarray([0.9, 0.1, 0.2])
+        weights = np.asarray([1.0, 1.0, 1.0])
+        assert weighted_median_value(probs, weights) == 0.2
+
+        # Two votes: the smallest value whose cumulative weight reaches half.
+        probs2 = np.asarray([0.5, 0.6])
+        assert weighted_median_value(probs2, np.asarray([1.0, 1.0])) == 0.5
+
+    def test_no_split_when_gap_small(self) -> None:
+        probs = np.asarray([0.50, 0.52, 0.54, 0.55])
+        weights = np.asarray([1.0, 1.0, 1.0, 1.0])
+        damped, fired = split_damped_weights(probs, weights, 20.0)
+        assert fired is False
+        assert damped == pytest.approx(weights)
+
+    def test_no_split_with_fewer_than_two_per_side(self) -> None:
+        # A lone outlier vote must not trigger damping (canonical gate
+        # requires at least two votes on each side of the gap).
+        probs = np.asarray([0.10, 0.11, 0.12, 0.90])
+        weights = np.asarray([1.0, 1.0, 1.0, 1.0])
+        damped, fired = split_damped_weights(probs, weights, 20.0)
+        assert fired is False
+        assert damped == pytest.approx(weights)
+
+    def test_split_detected_and_damped(self) -> None:
+        # 2-vs-2 split with a dominant gap: damping fires (side weights are
+        # unchanged when both sides are equal size, matching the canonical
+        # test's expectation that the flag fires and fusion continues).
+        probs = np.asarray([0.10, 0.11, 0.90, 0.91])
+        weights = np.asarray([1.0, 1.0, 1.0, 1.0])
+        damped, fired = split_damped_weights(probs, weights, 20.0)
+        assert fired is True
+        assert damped == pytest.approx(weights)
+
+    def test_split_with_unequal_sides_damps_majority_up(self) -> None:
+        # 3-vs-2 split: the larger side keeps more weight (3/5*2 = 1.2 vs
+        # 2/5*2 = 0.8), so refusion pulls the fused value toward it.
+        probs = np.asarray([0.10, 0.11, 0.90, 0.91, 0.92])
+        weights = np.asarray([1.0] * 5)
+        damped, fired = split_damped_weights(probs, weights, 20.0)
+        assert fired is True
+        assert fuse_logit_mean(probs, damped) > fuse_logit_mean(probs, weights)
+
+    def test_fuse_sets_split_damped_flag(self) -> None:
+        ts = datetime.now(timezone.utc).isoformat()
+        ests = [
+            Estimate(market_id="mkt-1", probability=0.10, confidence=0.7,
+                     rationale="r", evidence=[], analyst_id="a0", timestamp=ts),
+            Estimate(market_id="mkt-1", probability=0.11, confidence=0.7,
+                     rationale="r", evidence=[], analyst_id="a1", timestamp=ts),
+            Estimate(market_id="mkt-1", probability=0.90, confidence=0.7,
+                     rationale="r", evidence=[], analyst_id="a2", timestamp=ts),
+            Estimate(market_id="mkt-1", probability=0.91, confidence=0.7,
+                     rationale="r", evidence=[], analyst_id="a3", timestamp=ts),
+        ]
+        d = fuse(ests, ConsensusConfig(method="logit-mean"))
+        assert d.split_damped is True
+
+        # Tight distribution: no damping.
+        ests_tight = [
+            Estimate(market_id="mkt-1", probability=0.50 + i * 0.01,
+                     confidence=0.7, rationale="r", evidence=[],
+                     analyst_id=f"a{i}", timestamp=ts)
+            for i in range(4)
+        ]
+        d2 = fuse(ests_tight, ConsensusConfig(method="logit-mean"))
+        assert d2.split_damped is False
+
+
+class TestDegradedGovernor:
+    """Row-5 deterministic governor: degraded estimates never vote."""
+
+    def _ests(self, degraded_flags: list[bool]) -> list[Estimate]:
+        ts = datetime.now(timezone.utc).isoformat()
+        probs = [0.9 if not deg else 0.5 for deg in degraded_flags]
+        return [
+            Estimate(market_id="mkt-1", probability=p, confidence=0.7,
+                     rationale="r", evidence=[], analyst_id=f"a{i}",
+                     timestamp=ts, degraded=deg)
+            for i, (p, deg) in enumerate(zip(probs, degraded_flags, strict=True))
+        ]
+
+    def test_all_degraded_refuses_to_trade(self) -> None:
+        d = fuse(self._ests([True, True]),
+                 ConsensusConfig(method="logit-mean", min_analysts=2))
+        assert d.gate == "skip"
+        assert d.consensus_prob == 0.5
+        assert d.governor_excluded == ["a0", "a1"]
+        assert d.split_damped is False
+
+    def test_degraded_excluded_from_fusion_and_weights(self) -> None:
+        ests = self._ests([False, True])
+        cfg = ConsensusConfig(method="logit-mean", min_analysts=2)
+        d = fuse(ests, cfg)
+        # Only one healthy analyst remains — below min_analysts, so no trade.
+        assert d.gate == "wait"
+        assert d.governor_excluded == ["a1"]
+        assert set(d.weights_used) == {"a0"}
+        # contributor_ids stays the full round roster: a1 did submit a ballot,
+        # the governor just excluded it (recorded in governor_excluded).
+        assert d.contributor_ids == ["a0", "a1"]
