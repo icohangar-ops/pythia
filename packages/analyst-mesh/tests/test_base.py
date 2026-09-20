@@ -270,3 +270,29 @@ async def test_call_llm_unknown_provider_raises():
     cfg2 = LLMConfig.model_construct(provider="unknown", model="x")
     with pytest.raises(LLMCallError, match="Unknown LLM provider"):
         await analyst._call_llm([{"role": "user", "content": "hi"}], cfg2)
+
+# Row 5 — degraded provenance: parse-fallback estimates must be marked so the
+# consensus governor can exclude them from fusion.
+
+def test_parse_valid_json_not_degraded(analyst, market):
+    raw = json.dumps({
+        "probability": 0.6,
+        "confidence": 0.7,
+        "rationale": "Clean.",
+        "evidence": [],
+    })
+    est = analyst._parse_llm_response(raw, market)
+    assert est.degraded is False
+
+def test_parse_partial_json_not_degraded(analyst, market):
+    # A partial parse keeps the LLM's genuine probability (only confidence is
+    # defaulted), so it is NOT a fabricated estimate and stays healthy.
+    raw = json.dumps({"probability": 0.42, "rationale": "Partial.", "evidence": []})
+    est = analyst._parse_llm_response(raw, market)
+    assert est.probability == pytest.approx(0.42)
+    assert est.degraded is False
+
+def test_parse_garbage_marked_degraded(analyst, market):
+    est = analyst._parse_llm_response("total garbage !!!", market)
+    assert est.probability == pytest.approx(0.5)  # prior
+    assert est.degraded is True

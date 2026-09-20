@@ -351,6 +351,7 @@ class BaseAnalyst(ABC):
                     evidence=[],
                     analyst_id=self.analyst_id,
                     timestamp=datetime.now(UTC).isoformat(),
+                    degraded=True,
                 )
 
         # 4. Last-resort fallback.
@@ -372,6 +373,7 @@ class BaseAnalyst(ABC):
                 evidence=[],
                 analyst_id=self.analyst_id,
                 timestamp=datetime.now(UTC).isoformat(),
+                degraded=True,
             )
 
         # Build an Estimate from the parsed dict, tolerating missing / extra keys.
